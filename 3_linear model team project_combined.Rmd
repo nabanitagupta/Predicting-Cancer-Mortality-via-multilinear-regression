@@ -1,0 +1,644 @@
+---
+title: "linear model group project"
+
+date: "2023-11-18"
+output: word_document
+---
+
+# libarary install here
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+library(corrplot)
+library(ggcorrplot)
+library(ALSM)
+library(glmnet)
+library(car)
+library(tidyverse)
+library(caret) 
+```
+
+```{r cars}
+#-------------------Data --------#
+
+data=read.csv("cancer_reg.csv",header = T)
+head(data)
+
+```
+
+
+```{r cars}
+dim(data)
+#Check if the median of 'MedianAgeMale' and 'MedianAgeFemale' is equal to 'MedianAge' for each county
+#---#Check if the median of 'MedianAgeMale' and 'MedianAgeFemale' is equal to 'MedianAge"------
+data$MedianAgeMaleFemale <- apply(data[, c("MedianAgeMale", "MedianAgeFemale")], 1, median)
+equality_check <- data$MeanAgeMaleFemale == data$MedianAge
+print(data[!equality_check, c( "MedianAgeMale", "MedianAgeFemale", "MedianAge","MedianAgeMaleFemale")])
+```
+
+########################      data pre-processing 
+
+```{r}
+# Since there median of male and femlae age are same so we remove 'MedianAgeMale' and 'MedianAgeFemale'.
+
+#-----# Remove specific columns------- 27 left
+
+data<- data[, !(names(data) %in% c("MedianAgeMale", "MedianAgeFemale", "studyPerCap", 
+                        "binnedInc", "avgDeathsPerYear", "avgAnnCount", 
+                       "PercentMarried","MedianAgeMaleFemale"))]
+dim(data)
+```
+```{r}
+#new Education category 23 variables left
+data$PctLowEducation<- rowMeans(data[, c( "PctHS18_24", "PctHS25_Over" ,"PctNoHS18_24")], na.rm = TRUE)
+
+data$PctHighEducation<- rowMeans(data[, c( "PctBachDeg25_Over", "PctBachDeg18_24","PctSomeCol18_24")], na.rm = TRUE)
+
+#Drop the original education columns
+data<- data[, !(names(data) %in% c("PctHS18_24", "PctHS25_Over", "PctSomeCol18_24", "PctBachDeg18_24", "PctBachDeg25_Over","PctNoHS18_24"))]
+dim(data)
+```
+```{r}
+#-----------------------#manipulating  health coverage categories #------------------------
+# Create new columns for health coverage
+data$MeanPrivateCoverage <- rowMeans(data[, c("PctPrivateCoverage", "PctPrivateCoverageAlone", "PctEmpPrivCoverage")], na.rm = TRUE)
+data$MeanPublicCoverage <- rowMeans(data[, c("PctPublicCoverage", "PctPublicCoverageAlone")], na.rm = TRUE)
+
+# Drop the original health coverage columns 25 left
+data<- data[, !(names(data) %in% c("PctPrivateCoverage", "PctPrivateCoverageAlone", "PctEmpPrivCoverage", "PctPublicCoverage", "PctPublicCoverageAlone"))]
+#-------
+data <- data[!is.na(data$PctEmployed16_Over), ]
+
+colSums(is.na(data))
+colnames(data)
+
+dim(data)  #20 variables
+```
+
+Removed "PopEstimate" from data as "Cancer" isn't typically a contagious disease. Hence, we want to disregard this in our analysis.
+remove""Geography" since it is just county name information,not useful for regression
+removed"incidenceRate"
+
+```{r}
+# Create a vector for each category
+demographic_columns <- c("MedianAge", "AvgHouseholdSize", "PctWhite", "PctBlack", "PctAsian", "PctOtherRace", "PctMarriedHouseholds", "BirthRate")
+education_columns <- c("PctLowEducation", "PctHighEducation")
+employment_columns <- c("PctEmployed16_Over", "PctUnemployed16_Over")
+income_poverty_columns <- c("medIncome", "povertyPercent")
+health_coverage_columns <- c("MeanPrivateCoverage", "MeanPublicCoverage")
+
+# Combine all columns in the desired order
+ordered_columns <- c( demographic_columns,
+                      employment_columns, education_columns,
+                     income_poverty_columns, health_coverage_columns,"TARGET_deathRate")
+# Create a new data frame with the 17 ordered columns
+ordered_data <- data[ordered_columns]
+colnames(ordered_data)
+dim(ordered_data)   #17 variables 
+```
+
+
+# Correlations analysis on 17 variables
+```{r}
+r2 = round(cor(ordered_data, use = "complete"), 2)
+ggcorrplot(r2, hc.order = TRUE, type = "full", lab = TRUE, lab_size = 2,show.legend = TRUE, ggtheme = theme_minimal(),title="correlation matrix between variables") # Change font size of the labels
+```
+
+```{r}
+#ABsolute value of correlation
+a =  as.data.frame(sort(abs(cor(ordered_data, use = "complete")[17,]))) # sorting the corr for easy visualization
+str(a) # 26 as we removed the categorical variable "Geography" aka County name 
+round(a,2)
+
+# Investigating variables with high correlation with the target variable, true value, not abs
+cor_17=as.data.frame(round(sort(cor(ordered_data, use = "complete")[,17],decreasing = T),4)) 
+cor_17
+
+```
+# most correlated variabels are: positively related:MeanPublicCoverage	0.4371			povertyPercent	0.4251			PctUnemployed16_Over	0.3738			PctLowEducation	0.3434	
+# negatively related: MeanPrivateCoverage	-0.3538			PctEmployed16_Over	-0.4120			medIncome	-0.4268	
+
+
+
+# VIF check multicollinearity among 17 variables
+```{r}
+lm.data=lm(TARGET_deathRate~.,data=ordered_data) # build a elementary model with 17 variabels to check vif
+# Calculate VIF  each predictor
+vif_values <- car::vif(lm(TARGET_deathRate~.,data=ordered_data))
+vif_values
+#generally, vif>4 or sqrt(vif)>2 indicate multicollinearity issue, 6 variabels has this issue 
+needs_investig <- names(vif_values[vif_values > 4])
+needs_investig
+
+# Identify variables with high VIF
+high_vif_vars <- names(vif_values[vif_values > 9])
+high_vif_vars# is 0 means no serious multicollinearity
+```
+
+# residual normality,check.see outliers, equal variance. LINE assumption CHECK 
+```{r}
+##residual
+residuals=resid(lm.data)
+c=hist(residuals, xlab = "Residuals", ylab="Density" ,col = "pink",main = "Histogram of residuals",freq  = FALSE)
+#qqnorm(residuals)
+#qqline(residuals) this qq norm line is cinluded by following code
+par(mfrow=c(2,2))
+plot(lm.data)
+#it is not normal
+```
+
+
+# basic model on updated data frame
+# Fitting LASSO regression
+```{r}
+colnames(ordered_data)
+#define response variable
+y <- ordered_data$TARGET_deathRate
+x <- data.matrix(ordered_data[, -c(17)])
+
+# cv.glmnet() automatically performs k-fold cross validation using k = 10 folds.
+# Find optimal lambda value
+cv_model2 <- cv.glmnet(x, y, alpha = 1)
+cv_model2
+?glmnet
+
+#find optimal lambda value that minimizes test MSE
+best_lambda2 <- cv_model2$lambda.min
+best_lambda2 # 0.1380048
+
+#produce plot of test MSE by lambda value
+plot(cv_model2) 
+
+#find coefficients of best model
+best_model2 <- glmnet(x, y, alpha = 1, lambda = best_lambda2)
+coef(best_model2)
+best_model2
+summary(best_model2)
+
+# Trying to list variables with higher coeffs.
+Lasso_coeff = as.matrix(coef(best_model2), row.names(TRUE))
+Lasso_coeff
+round(Lasso_coeff,2)
+which(abs(Lasso_coeff) < 0.01, arr.ind = T) 
+which(abs(Lasso_coeff) > 0.01, arr.ind = T) 
+
+# Analysis: an attempt for dimensionality reduction
+which(abs(Lasso_coeff) > 0.01, arr.ind = T) 
+#which(abs(r2) > 0.01) 
+```
+
+#-----------------------------standardize data and chose features based on LASSO REGRESION RESULTS
+```{r}
+df <- ordered_data[,-c(1)] 
+dim(df)  
+
+#df <- as.data.frame(DF)
+for (i in 1:length(df)){df[,i] <- (df[,i] - mean(df[,i])) / sd(df[,i])}
+
+# Variables considered by LASSO (variables with non-zero coeffs.).
+
+which(abs(Lasso_coeff) > 0.01, arr.ind = T) 
+
+select_var_lasso = c(rownames(which(abs(Lasso_coeff) > 0.01, arr.ind = T)))
+select_var_lasso = select_var_lasso[-1] # Removing the "intercept" from the list
+
+df2 = df[,c("TARGET_deathRate",select_var_lasso)]
+dim(df2)  # [1] 2895   13   
+################
+####### these 12 varibales and 1 target is the 13 variables choosen from LASSO, and our following steps are based on this df2. so please keep consistency with this df2
+colnames(df2)
+head(df2)
+df2
+```
+##this the our base model on 12 variabels. 
+```{r}
+lm2.data_Normal <- lm(TARGET_deathRate~.,data = df2)
+summary(lm2.data_Normal)
+par(mfrow = c(2,2))
+plot(lm2.data_Normal)
+```
+
+
+
+#############################################  some updated since 11/21/2023 after meeting with professor
+#  hypothesis test part  here we still have 12 variables 
+
+# this part,we did test to see if each category as a whole is significant or not. 
+# we do not compare within each category,we look at each as a whole and see of all variables in one category has bi=0 or at least 1 of them is not 0.
+
+# economic part _Yi 
+# economic category has 4 related variables(PctUnemployed16_Over,povertyPercent,MeanPrivateCoverage,MeanPublicCoverage)
+```{r}
+#test the coefficien of economics category variables
+#reduced model: reduce 4 variables which economics related
+lm.redu_eco<-lm(TARGET_deathRate~.-PctUnemployed16_Over-povertyPercent-MeanPrivateCoverage-MeanPublicCoverage,data=df2)  #reduce 4 related variables
+summary(lm.redu_eco)
+anova(lm.redu_eco)
+anova1=anova(lm2.data_Normal)
+anova1
+anova(lm.redu_eco,lm2.data_Normal)
+```
+
+#LULU did four hypothesis tests for 4 subcategory of variables: 
+# 1, race( PctBlack + PctAsian + PctOtherRace ), 
+# 2, household,(AvgHouseholdSize+ PctMarriedHouseholds )
+# 3, Birth( BirthRate )
+# 4, education.( PctLowEducation + PctHighEducation )
+
+# race category _LULU
+```{r}
+# Fit the model with the race terms(Full_model)
+model_with_race <- lm(TARGET_deathRate~.,data = df2)
+ 
+# Fit the model without the race terms
+model_without_race <- lm(TARGET_deathRate ~ AvgHouseholdSize + PctMarriedHouseholds + BirthRate + PctUnemployed16_Over +  PctLowEducation + PctHighEducation + povertyPercent + MeanPrivateCoverage + MeanPublicCoverage, data = df2)
+ 
+# Perform an ANOVA to compare the two models
+anova_result_race <- anova(model_without_race, model_with_race)
+ 
+# Display the ANOVA results
+anova_result_race
+```
+
+#household category _LULU
+```{r}
+# Fit the model with the house terms(Full_model)
+model_with_house <- lm(TARGET_deathRate~.,data = df2)
+ 
+# Fit the model without the house terms
+model_without_house <- lm(TARGET_deathRate ~ PctBlack + PctAsian + PctOtherRace + BirthRate + PctUnemployed16_Over +  PctLowEducation + PctHighEducation + povertyPercent + MeanPrivateCoverage + MeanPublicCoverage, data = df2)
+ 
+# Perform an ANOVA to compare the two models
+anova_result_house <- anova(model_without_house, model_with_house)
+ 
+# Display the ANOVA results
+anova_result_house
+```
+
+#BIRTH CATEGORY _LULU
+```{r}
+# Fit the model with the birthrate(Full_model)
+model_with_birth <- lm(TARGET_deathRate~.,data = df2)
+ 
+# Fit the model without the birthrate terms
+model_without_birth <- lm(TARGET_deathRate ~ AvgHouseholdSize + PctBlack + PctAsian + PctOtherRace + PctMarriedHouseholds + PctUnemployed16_Over +  PctLowEducation + PctHighEducation + povertyPercent + MeanPrivateCoverage + MeanPublicCoverage, data = df2)
+ 
+# Perform an ANOVA to compare the two models
+anova_result_birth <- anova(model_without_birth, model_with_birth)
+ 
+# Display the ANOVA results
+anova_result_birth
+```
+
+#EDUCATION CATEGORY _LULU
+```{r}
+# Fit the model with the education(Full_model)
+model_with_edu <- lm(TARGET_deathRate~.,data = df2)
+ 
+# Fit the model without the education terms
+model_without_edu <- lm(TARGET_deathRate ~ AvgHouseholdSize + PctBlack + PctAsian + PctOtherRace + PctMarriedHouseholds + BirthRate+ PctUnemployed16_Over + povertyPercent + MeanPrivateCoverage + MeanPublicCoverage, data = df2)
+ 
+# Perform an ANOVA to compare the two models
+anova_result_edu <- anova(model_without_edu, model_with_edu)
+ 
+# Display the ANOVA results
+anova_result_edu
+```
+##lulu's comments for previous parts: The categories all I checked are improves ability to predict the target death rate.
+
+
+
+
+########### interaction test part 
+
+# interaction term explore by  _Lulu
+```{r}
+model_interaction <- lm(TARGET_deathRate ~ (AvgHouseholdSize + PctBlack
+                        + PctAsian + PctOtherRace + BirthRate
+                        + PctMarriedHouseholds + PctUnemployed16_Over
+                        + PctLowEducation + PctHighEducation
+                        + povertyPercent + MeanPrivateCoverage
+                        + MeanPublicCoverage)^2, data = df2)     # this bind check all the possible pairs, running takes time
+summary(model_interaction)
+
+stepwise_model <- step(model_interaction, direction = "both")
+summary(stepwise_model)
+
+simple_model_formula <- formula(stepwise_model)
+print(simple_model_formula)
+
+# Recreate the simplified model using the simple formula
+simplified_model <- lm(simple_model_formula, data = df2)
+ 
+# Summary of the simplified model
+summary(simplified_model)
+
+# The predictors of simplified model was selected using stepwise, base on CIA
+```
+
+
+
+########################### model selection and choose the best model by step wise regression by 11/21/2023 2pm
+
+```{r}
+# step wise regression and subset to see best model_Yi
+#use stepwise regression and subset to choose best model , here the full model used is lm2.data_Normal which has 12 variables 
+
+start.model=lm(TARGET_deathRate~1,data = df2)
+step(lm2.data_Normal, direction = "backward")
+step(start.model, direction = "forward",scope=formula(lm2.data_Normal))
+
+# results shows that both forward and backward shows same results,  with 10 variables, AIC reachees smallest -1107.08
+# it reduced 2 variables ( PctBlack   and - AvgHouseholdSize ) 
+
+```
+
+# use regression susets selection procedure to compare with setpwise results _Yi
+```{r}
+?regsubsets
+regsub=regsubsets(TARGET_deathRate~.,data = df2,nvmax=12)
+summary(regsub)
+# results shows that for subsets size of 10 variables, same like step wise results,  avghouseholdsize, pctblack.are deleted. 
+
+```
+
+### based on regression results, compare different criteria such as R2,Cp, AIC, PRESS and choose the best model._Elaheh_Yi
+```{r}
+sumreg <- summary(regsub) 
+par(mfrow = c(2,2)) 
+plot( sumreg$rsq, xlab = "No. of variables", ylab = "R-square", type = "l" ) 
+plot( sumreg$adjr2, xlab = "No. of variables", ylab = "Adjusted R-square", type = "l" )
+plot( sumreg$cp, xlab = "No. of variables", ylab = "Cp values", type = "l" )
+plot( sumreg$bic, xlab = "No. of variables", ylab = "BIC", type = "l" ) 
+ 
+## Selected variables 
+par(mfrow=c(1,1)) 
+plot(regsub, scale = "r2", main="Subset plot based on R2") 
+plot(regsub, scale = "adjr2",main="based on Adjusted R2") 
+plot(regsub, scale = "Cp", main="based on Mallow's")
+plot(regsub, scale = "bic", main="based on BIC's")
+```
+# results:_Yi 
+# r square reach maximum with 12 variables;
+# adjust r square, reach maximum at 10 variables;
+# Cp and BIC reach minimum ar 10 variables;
+# BIC reach minimum ar 9 variables;
+# sum up, from previous results, seems that with 9 or 10  variables, the model has best results
+
+
+# from regression subsets procedure, and above several criteria, the best model may be with 9 variables_Yi  ############# updated 11/23/2023
+```{r}
+lm.best9=lm(formula = TARGET_deathRate ~ MeanPublicCoverage + PctOtherRace + 
+    povertyPercent + PctLowEducation + MeanPrivateCoverage + 
+    PctUnemployed16_Over + PctMarriedHouseholds + BirthRate + 
+    PctHighEducation, data = df2)
+lm.best9
+summary(lm.best9)
+anova(lm.best9)
+
+#AIC and pressc values
+AICp(lm.best9)
+pressc(lm.best9)
+```
+
+# let's compare anova of best model(9variables) and compare with  full model(12 variables model but ordered by SSR contribution)Yi
+```{r}
+lm.full12=lm(formula = TARGET_deathRate ~ MeanPublicCoverage + PctOtherRace + 
+    povertyPercent + PctLowEducation + MeanPrivateCoverage + 
+    PctUnemployed16_Over + PctMarriedHouseholds + BirthRate + 
+    PctHighEducation + PctAsian+ PctBlack+AvgHouseholdSize, data = df2)   #this model has same variable with lm2.data_Normal,but variable order is decreasing by SSR 
+summary(lm.full12)
+anova(lm.full12)
+anova(lm.best9,lm.full12)
+```
+# results shows by deletding "PctAsian+ PctBlack+AvgHouseholdSize" these 3 variables, the p value is not siginifaicant ,thus, thoese 3 variables could have coeffficient of 0, and can be dropped.
+# we got our best model which is "lm.best9" with 9 variabels, and the order of variable does matter!!!!
+
+
+
+
+#confidence interval of parameters_Yi
+```{r}
+confint(lm.best9)  # b0 =0 
+```
+##from confidence interval (95%)of parameters, we can see that the CI for intercept includes 0 between. Also, from summary(lm.best9), it shows not siginifaicnat p value for intercept term. so we fail to reject b0 = 0 , and conclude that for our model, b0 is 0. 
+
+
+
+
+
+
+# After got best.9 model, Elaheh and Yi checked interaction term again based on 9 selected variabels , and find 1 siginificant interaction term. 
+## Interaction PovertyPercent and MeanPublicCoverage ,this turns out not siginificant 
+```{r}
+lm_test_PublicCoverage_poverty <- lm(TARGET_deathRate ~MeanPublicCoverage + PctOtherRace +     povertyPercent + 
+                                       PctLowEducation + MeanPrivateCoverage
+                                     +     PctUnemployed16_Over + PctMarriedHouseholds + BirthRate +  
+                                       
+                                       PctHighEducation+     MeanPublicCoverage*povertyPercent  ,                                              data = df2) #reduced_int<-lm.best9 
+# Compare models using ANOVA 
+anova(lm_test_PublicCoverage_poverty) 
+anova(lm.best9,lm_test_PublicCoverage_poverty) 
+
+#F*=(SSE(R) - SSE (F))/ (DF(R)-DF(F)) / (SSE(F)/ DF(F)) 
+#F= (1962.32 - 1962.30+10 )/(2885- 2884)/1962.30* 2884    
+#F=0.02939408 
+#p value
+#1- pf(F, 1,2884)
+# ####################   Yi's comment : this value is already in the anova table () MeanPublicCoverage:povertyPercent    1    0.02    0.02   0.0288 0.8652034   ) , no need to compute by hand 
+```
+#  the interaction term 'MeanPublicCoverage * povertyPercent',tested not siginifaicant 
+Sine p_value =0.86 >0.05 ,
+so we do not have enough evidence to reject the null hypothesis.
+it seems, the interaction term 'MeanPublicCoverage * povertyPercent'
+may not be statistically significant in improving the model. 
+The model without this interaction term is not significantly worse than the model with it
+
+# Interaction between  PctLowEducation and povertyPercent, not siginificant 
+(Pr(>F)) is 0.34, it suggests that you do not have enough evidence to reject the null hypothesis. In other words, there is no significant improvement in model fit by adding the interaction term 'PctLowEducation * povertyPercent'. The simpler model (best.model 9) is preferred
+
+# Interaction  between PctUnemployed16_Over and  MeanPublicCoverage, is siginifaicnat _ code by Yi
+```{r}
+# Interaction term of PctUnemployed16_Over and MeanPublicCoverage 
+lm_interation2 <- lm(TARGET_deathRate ~MeanPublicCoverage + PctOtherRace +povertyPercent + PctLowEducation + MeanPrivateCoverage +PctUnemployed16_Over + PctMarriedHouseholds + BirthRate + PctHighEducation + MeanPublicCoverage*PctUnemployed16_Over  , data = df2) 
+summary(lm_interation2)
+anova(lm_interation2) 
+anova(lm_interation2, lm.best9) 
+## The small p-value (1.528e-05) indicates strong evidence against the null hypothesis. we can conclude that the        interaction term 'PctUnemployed16_Over * MeanPublicCoverage'  improves the model fit.
+```
+  
+  
+
+# partial coeficient determination of best 9 model_Elaheh
+## #####
+```{r}
+# Get the summary of the linear regression model
+anova (lm.best9)
+#SSE=1962.32
+#RZ_MeanPublicCoverage= (1994.92-1962.32)/1994.92*100
+#R_PctOtherRace=(2020. 60-1962.32)/2020.60*100
+#R2_povertyPercent=(2001.80-1962.32)/2001.80*100
+#MeanPublicCoverage----R^2=1.63 %
+#PctOtherRace-----R^2=2.88 % #povertyPercent----R^2=1.97 %
+#PctLowEducation----R^2=4.5 %
+#MeanPrivateCoverage----R^2=1.83 %
+#PctUnempLoyed16_Over---R^2=1.09 %
+#PctMarriedHouseholds----R^2=1.15 %
+#BirthRate-----R^2=0.63. %
+#PctHighEducation. R12=0.5 %|
+# Data
+partial_coefficient_data <- data.frame(
+Variable = c('MeanPublicCoverage', 'PctOtherRace', 'PovertyPercent', 'PctLowEducation',
+'MeanPrivateCoverage', 'PctUnemployed16_Over', 'PctMarriedHouseholds',
+'BirthRate', 'PctHighEducation'),
+R_squared = c(1.63, 2.88, 1.97, 4.5, 1.83, 1.09, 1.15, 0.63, 0.5))
+
+partial_coefficient_data
+```
+# same code partial coeficient determination but compute with package, same results
+```{r}
+# R^2 with package, I have found this package and calculate for every single one , resul twas same as mine
+library('asbio') 
+lm.with<-lm.best9 
+lm.without<-update(lm.best9, ~. - PctOtherRace) 
+partial.R2(lm.without,lm.with)
+```
+
+
+
+####################################### basically done with hypo test, do more model diagnose, LI.N.E check and checked outliers and influential points,prediction with model
+
+##looking for any outliers_Yi
+```{r}
+par(mfrow=c(2,2))
+plot(lm.best9)
+plot(rstudent(lm.best9),type="o",xlab="case index")
+#text(rstudent(lm.best9), labels=rownames(df2), cex=0.7, font=2)  
+title("(a) Studentized Delected residuals")
+
+#qqplot of studenidized residuals
+qqPlot(lm.best9,labels=row.names(df2),id.method="identify",simulate=TRUE,main = "Q-Q plot")
+```
+# fitted plot shows : 1221, 1366, 1942 outliers
+#  normality and independent residuals seems true. 
+# studentized plot shows several points that are out of +-4 range 
+
+
+
+# CHECK constant variance, do BF test constant variance _Yi
+```{r}
+group<-rep(1,length(df$AvgHouseholdSize))
+summary(lm.best9$fitted.values)
+group[lm.best9$fitted.values<0]=0
+bftest(lm.best9,group,alpha=0.05)
+?bftest
+# pvalue is siginificant, so reject ho=equal variance, and conclude non equal variance. 
+```
+# constant variance test again, and show abs standardized residuals vs fitted values, and superimposed a line of best fit. 
+```{r}
+ncvTest(lm.best9)
+spreadLevelPlot(lm.best9)
+# Non-constant Variance Score Test 
+#Variance formula: ~ fitted.values 
+#Chisquare = 40.22508, Df = 1, p = 2.2632e-10
+
+#Suggested power transformation:  0.8998591 
+```
+```{r}
+#power transformation Response  with power value  0.8998591 and check constant variance again
+lamda=0.9
+y_tr=df2$TARGET_deathRate^lamda   # I got nan by transfer response with this lambda value
+y_tr
+lm.best9_transf=lm(formula = y_tr ~ df2$MeanPublicCoverage + df2$PctOtherRace + 
+    df2$povertyPercent + df2$PctLowEducation + df2$MeanPrivateCoverage + 
+    df2$PctUnemployed16_Over + df2$PctMarriedHouseholds + df2$BirthRate + 
+    df2$PctHighEducation)
+lm.best9_transf
+ncvTest(lm.best9_transf)
+spreadLevelPlot(lm.best9_transf)
+
+```
+
+
+##influential points, compute Cook's distance, or DFFITS etc and comments on those_Yi
+```{r}
+#cook's distance
+which.max(cooks.distance(lm.best9)) 
+plot(cooks.distance(lm.best9),type = "o")  # cook's distance
+#text(cooks.distance(lm.best9), labels=rownames(df2), cex=0.9, font=2)
+title("(c) Cook's Distance")
+pf(cooks.distance(lm.best9)[1008],9,2895-9) 
+?cooks.distance
+```
+# points index 1008 shows higest cook's distance and value is 0.0518, percentile is <0.2, thus not influential. 
+
+
+
+
+###### fit with best model on training data set , predict on test data
+```{r}
+
+set.seed(100)
+#splitting df2 into Training & test data 
+random_sample <- createDataPartition(df2 $ TARGET_deathRate,  p = 0.7, list = FALSE)
+training_dataset  <- df2[random_sample, ] 
+testing_dataset <- df2[-random_sample, ]
+ model <- lm(TARGET_deathRate ~MeanPublicCoverage + PctOtherRace +            
+              povertyPercent + PctLowEducation +  MeanPrivateCoverage +  
+              PctUnemployed16_Over + PctMarriedHouseholds + BirthRate +
+              PctHighEducation, data = training_dataset) 
+predictions <- predict(lm.best9, testing_dataset)
+
+# computing model performance metrics
+ data.frame(R2 = R2(predictions, testing_dataset $ TARGET_deathRate),
+                  MSPE = RMSE(predictions, testing_dataset $ TARGET_deathRate)^2, #MSPE 
+           RMSE = RMSE(predictions, testing_dataset $ TARGET_deathRate),  #Root mean squared error 
+           Relative_error=( RMSE(predictions,testing_dataset$TARGET_deathRate))/mean(testing_dataset$TARGET_deathRate)) #Relative error = RMSE/ mean(Y)
+```
+
+# NG edit with interaction term
+
+```{r}
+
+model2 <- lm(TARGET_deathRate ~MeanPublicCoverage + PctOtherRace +            
+              povertyPercent + PctLowEducation +  MeanPrivateCoverage +  
+              PctUnemployed16_Over + PctMarriedHouseholds + BirthRate +
+              PctHighEducation + MeanPublicCoverage*PctUnemployed16_Over , data = training_dataset) 
+predictions2 <- predict(model2, testing_dataset)
+
+anova(model, model2)
+
+# computing model performance metrics
+ data.frame(R2 = R2(predictions2, testing_dataset $ TARGET_deathRate),
+                  MSPE = RMSE(predictions2, testing_dataset $ TARGET_deathRate)^2, #MSPE 
+           RMSE = RMSE(predictions2, testing_dataset $ TARGET_deathRate),  #Root mean squared error 
+           Relative_error=( RMSE(predictions2,testing_dataset$TARGET_deathRate))/mean(testing_dataset$TARGET_deathRate)) #Relative error = RMSE/ mean(Y)
+```
+
+```{r}
+lm.best9=lm(formula = TARGET_deathRate ~ MeanPublicCoverage + PctOtherRace + 
+    povertyPercent + PctLowEducation + MeanPrivateCoverage + 
+    PctUnemployed16_Over + PctMarriedHouseholds + BirthRate + 
+    PctHighEducation, data = df2)
+
+model3 <- lm(TARGET_deathRate ~MeanPublicCoverage + PctOtherRace +            
+              povertyPercent + PctLowEducation +  MeanPrivateCoverage +  
+              PctUnemployed16_Over + PctMarriedHouseholds + BirthRate +
+              PctHighEducation + MeanPublicCoverage*PctUnemployed16_Over , data = df2) 
+predictions3 <- predict(model3, df2)
+prd_lm.best9 <- predict(lm.best9, df2)
+anova(model3, lm.best9)
+
+# computing model performance metrics for lm.best9
+ data.frame(R2 = R2(prd_lm.best9, df2 $ TARGET_deathRate),
+                  MSPE = RMSE(prd_lm.best9, df2 $ TARGET_deathRate)^2, #MSPE 
+           RMSE = RMSE(prd_lm.best9, df2 $ TARGET_deathRate),  #Root mean squared error 
+           Relative_error=( RMSE(prd_lm.best9,df2$TARGET_deathRate))/mean(df2$TARGET_deathRate)) #Relative error = RMSE/ mean(Y)
+ 
+# computing model performance metrics for model3
+ data.frame(R2 = R2(predictions3, df2 $ TARGET_deathRate),
+                  MSPE = RMSE(predictions3, df2 $ TARGET_deathRate)^2, #MSPE 
+           RMSE = RMSE(predictions3, df2 $ TARGET_deathRate),  #Root mean squared error 
+           Relative_error=( RMSE(predictions3,df2$TARGET_deathRate))/mean(df2$TARGET_deathRate)) #Relative error = RMSE/ mean(Y)
+```
+

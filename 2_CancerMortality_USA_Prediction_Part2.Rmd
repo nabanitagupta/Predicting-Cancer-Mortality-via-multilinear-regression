@@ -1,0 +1,178 @@
+---
+title: "cancer2Mortality_USA_Prediction_Part2"
+author: 'Nabanita Gupta; PSID: 0635520'
+date: "2023-11-18"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# --------------------------------
+# Importing the edited data
+# --------------------------------
+
+```{r}
+cancer2 = read.csv("cancerEd.csv", header = TRUE)
+dim(cancer2)
+names(cancer2)
+
+```
+
+# Assessing multicollinearity
+
+```{r}
+#cov(cancer2[,-c(8,28)], use = "complete") # covariance
+res = round(cor(cancer2[,-c(8, 28)], use = "complete"), 2) # ignoring missing values
+# Investigating variables with high correlation
+# Compute and show the  result
+# Install and load the ggcorrplot package
+#install.packages("ggcorrplot")
+library(ggcorrplot)
+ggcorrplot(res, hc.order = TRUE, type = "lower", lab = FALSE, show.legend = FALSE, ggtheme = theme_minimal())
+
+
+# Investigating variables with high correlation with the target variable
+cor(cancer2[,-c(8, 28)], use = "complete")[1,] # Extracting cor btw target and others; 
+a =  as.data.frame(sort(abs(cor(cancer2[,-c(8,28)], use = "complete")[1,]))) # sorting the corr for easy visualization
+str(a) # 26 as we removed the categorical variable "Geography" aka County name 
+round(a,2)
+rownames(a)
+colnames(a) = c("Cors: Target & others")
+summary(a) # median = 0.2797026, mean = 0.2962037 
+#table(summary(a))
+sum(a>0.4009363 ) # correlations >40%/more than 3rd quartile = 7
+a[c(which(a>0.4009363)),]
+rownames(a)[c(which(a>0.4009363))] # Variables with high corr with target variable
+
+# --------------------------------
+installed.packages("GGally")
+library(GGally) 
+# Too many parameters to plot all together. 
+# Making separate ggpair plots for each group of parameters.
+names(cancer2)
+c_casesEcon = c(2,3,4,(15:21)) # Group 1 & Group 2 variables
+c_socialMisc = c(5,6,7,9, 10, 26, 27) # Group 3 variables
+c_ed = c(11,12,13,14) # Group 4 variables (Education)
+c_eth = c(22:25) # Group 5 variables (Ethnicity)
+
+# Plotting group 1 & Group 2 variables (#cases, economic factors)
+ggpairs(cancer2,columns = c(1, c_casesEcon), title = "Scatter Plot Matrix for cancer2 (#cases & economic factors)", axisLabels = "show")
+
+# Plotting group 3 variables (Pop., Age & other social factors)
+ggpairs(cancer2,columns = c(1, c_socialMisc), title = "Scatter Plot Matrix for cancer2 (Population, Age & Other social factors)")
+
+# Plotting group 4 variables (Education factors)
+ggpairs(cancer2,columns = c(1, c_ed), title = "Scatter Plot Matrix for cancer2 (Education factors)")
+
+# Plotting group 5 variables (Ethnicity parameters)
+ggpairs(cancer2,columns = c(1, c_eth), title = "Scatter Plot Matrix for cancer2 (Ethnicity factors)")
+
+
+#Checking, analyzing collinearlity for cases diagnosed and economic factors
+# Original data
+df_cor = as.data.frame(cor(cancer2[,-8], use = "complete")) # ignoring missing values
+dim(df_cor)
+min(abs(df_cor))
+min(abs(df_cor2))
+# Modified data
+df_cor2 = as.data.frame(cor(cancer22[,-c(5,29)], use = "complete")) # ignoring missing values
+dim(df_cor2) # 27 x 27 = 729
+min(abs(df_cor2))
+sum(abs(df_cor2) < 0.1) #226
+sum(abs(df_cor2) < 0.2) - sum(abs(df_cor2) < 0.1) # 110
+for (i in 0.1:1){
+  sum(abs(df_cor2) < 0.1) 
+}
+
+# ------------------------------------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------------------------------
+
+```
+
+
+#Fitting a ridge regression
+As Ridge regression can be used to fit a regression model when multicollinearity is present in the data. In least square method we try to minimize, $RSS = Σ(yi – ŷi)^2$. In Ridge regression, we minimize $RSS + λΣβ_j^2$. Where j ranges from 1 to p predictor variables and λ ≥ 0. The second term in the equation is known as a shrinkage penalty. In ridge regression, we select a value for λ that produces the lowest possible test MSE (mean squared error).
+
+```{r}
+# datas = res (correlations), cancer2; categories = 8, 28
+library(glmnet)
+
+#define response variable
+y <- cancer2$TARGET_deathRate
+x <- data.matrix(cancer2[, -c(1,8,28)])
+
+#fit ridge regression model
+model.ridge <- glmnet(x, y, alpha = 0)
+#view summary of model
+summary(model.ridge)
+# -------------------------------------------------------------
+#perform k-fold cross-validation to find optimal lambda value
+cv_model <- cv.glmnet(x, y, alpha = 0)
+#find optimal lambda value that minimizes test MSE
+best_lambda <- cv_model$lambda.min
+best_lambda
+
+#produce plot of test MSE by lambda value
+plot(cv_model) 
+#find coefficients of best model
+best_model <- glmnet(x, y, alpha = 0, lambda = best_lambda)
+coef(best_model)
+#produce Ridge trace plot
+plot(model.ridge, xvar = "lambda")
+
+#use fitted best model to make predictions
+y_predicted <- predict(model.ridge, s = best_lambda, newx = x)
+
+#find SST and SSE
+sst <- sum((y - mean(y))^2)
+sse <- sum((y_predicted - y)^2)
+
+#find R-Squared
+rsq <- 1 - sse/sst
+rsq
+```
+
+# Lasso regression can also be used in presence of multicollinearity in the data.
+lasso regression seeks to minimize the following: $RSS + λΣ|βj|$
+Where j ranges from 1 to p predictor variables and λ ≥ 0.
+
+```{r}
+# cv.glmnet() automatically performs k-fold cross validation using k = 10 folds.
+# Find optimal lambda value
+cv_model2 <- cv.glmnet(x, y, alpha = 1)
+
+#find optimal lambda value that minimizes test MSE
+best_lambda2 <- cv_model2$lambda.min
+best_lambda2 # 0.019458; much smaller compared to the Ridge $\lambda$.
+
+#produce plot of test MSE by lambda value
+plot(cv_model2) 
+
+#find coefficients of best model
+best_model2 <- glmnet(x, y, alpha = 1, lambda = best_lambda2)
+coef(best_model2)
+
+
+#use fitted best model to make predictions
+y_predicted2 <- predict(best_model2, s = best_lambda2, newx = x)
+
+#find SST and SSE
+sst2 <- sum((y - mean(y))^2)
+sse2 <- sum((y_predicted2 - y)^2)
+
+#find R-Squared
+rsq2 <- 1 - sse2/sst2
+rsq2 # 0.4947074
+
+# Trying to list variables with higher coeffs.
+Lasso_coeff = as.matrix(coef(best_model2), row.names(TRUE))
+which(abs(Lasso_coeff) < 0.01, arr.ind = T) # medIncome, MedianAge, PctPrivateCoverageAlone (beta = zero)
+
+
+a = sort(Lasso_coeff, decreasing = TRUE)
+
+```
+
